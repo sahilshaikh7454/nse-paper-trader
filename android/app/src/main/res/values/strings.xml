@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">NSE Paper Trader</string>
+    <string name="title_activity_main">NSE Paper Trader</string>
+    <string name="package_name">com.sahil.nsepapertrader</string>
+    <string name="custom_url_scheme">com.sahil.nsepapertrader</string>
+</resources>

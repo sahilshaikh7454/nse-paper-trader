@@ -1,0 +1,14 @@
+node_modules
+dist
+.DS_Store
+*.local
+.agents/skills-lock.json
+
+# Android
+android/.gradle
+android/build
+android/app/build
+android/.idea
+android/*.iml
+android/local.properties
+.gradle

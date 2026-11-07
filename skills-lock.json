@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "skills": {
+    "fibonacci-trading": {
+      "source": "bhala-srinivash/nse-trading-skills",
+      "sourceType": "github",
+      "skillPath": "fibonacci-trading/SKILL.md",
+      "computedHash": "d1ccfc1e95ea01cc9e858ccd1f02feea8b518dec669b20c96acc9febbb4feb88"
+    },
+    "multi-timeframe-analysis": {
+      "source": "bhala-srinivash/nse-trading-skills",
+      "sourceType": "github",
+      "skillPath": "multi-timeframe-analysis/SKILL.md",
+      "computedHash": "ce597a54c9365edb9d71d2548b577cb5e2282c9dde232d280b0177d2b9d24de1"
+    },
+    "nse-trading-toolkit": {
+      "source": "bhala-srinivash/nse-trading-skills",
+      "sourceType": "github",
+      "skillPath": "nse-trading-toolkit/SKILL.md",
+      "computedHash": "d5a50e0b1f456d1b01e7d1ce884a23d74f02514d71cececada81310cb3ae2817"
+    },
+    "position-sizing": {
+      "source": "bhala-srinivash/nse-trading-skills",
+      "sourceType": "github",
+      "skillPath": "position-sizing/SKILL.md",
+      "computedHash": "39eb79041ee8221aaeff61598bc396324eacb9938532b6aec57fbd8464feaa0e"
+    },
+    "risk-reward-ratio": {
+      "source": "bhala-srinivash/nse-trading-skills",
+      "sourceType": "github",
+      "skillPath": "risk-reward-ratio/SKILL.md",
+      "computedHash": "5ef708ef63014e2fd862f3fb63346ef843928f6b32557496e525b3812a9a5934"
+    },
+    "rsi-divergence": {
+      "source": "bhala-srinivash/nse-trading-skills",
+      "sourceType": "github",
+      "skillPath": "rsi-divergence/SKILL.md",
+      "computedHash": "7f751a581a66f6c2e13f3e8ecedcbd2e172eced12e87fa7cb7c182371f5ebc86"
+    },
+    "stop-loss-strategies": {
+      "source": "bhala-srinivash/nse-trading-skills",
+      "sourceType": "github",
+      "skillPath": "stop-loss-strategies/SKILL.md",
+      "computedHash": "219289566a9d818f2dfaf716ead96b363a8054a4b1d28e5b8858b7f2f97d5807"
+    },
+    "technical-analysis": {
+      "source": "bhala-srinivash/nse-trading-skills",
+      "sourceType": "github",
+      "skillPath": "technical-analysis/SKILL.md",
+      "computedHash": "2edc02a78da317c34b7f328149f8227a9796813cea915e33b203517e74d063c1"
+    },
+    "trailing-stops": {
+      "source": "bhala-srinivash/nse-trading-skills",
+      "sourceType": "github",
+      "skillPath": "trailing-stops/SKILL.md",
+      "computedHash": "3c78addd7e3035e0dbbcbbf2bd48d2188902abc2a210d5936e0c56997d782569"
+    }
+  }
+}
