@@ -15,46 +15,56 @@ export default function App() {
   const tickRef = useRef<ReturnType<typeof setInterval>>();
 
   useEffect(() => {
-    // Initial tick
-    if (store.autoTrade) runTick();
-    // Every 60s
+    // Initial engine run on startup
+    runTick();
+
+    // 60-second engine loop
     tickRef.current = setInterval(() => {
-      if (isMarketOpen() && store.autoTrade) runTick();
+      if (isMarketOpen() || store.positions.length > 0) {
+        runTick();
+      }
     }, 60_000);
-    return () => clearInterval(tickRef.current);
+
+    return () => {
+      if (tickRef.current) clearInterval(tickRef.current);
+    };
   }, [store.autoTrade]);
 
   async function runTick() {
-    const results = await runEngineTick();
-    if (results.length > 0) useStore.getState().setScanResults(results);
+    try {
+      await runEngineTick();
+    } catch (e: any) {
+      console.warn('[App] Engine tick error:', e);
+    }
   }
 
-  const nav = (s: Screen) => (
+  const nav = (s: Screen, label: string, icon: string) => (
     <button
       onClick={() => setScreen(s)}
-      className={`flex-1 py-3 text-xs font-semibold transition-colors ${
-        screen === s ? 'text-accent border-t-2 border-accent' : 'text-muted'
+      className={`flex-1 py-3 text-xs font-semibold flex flex-col items-center gap-1 transition-colors ${
+        screen === s ? 'text-accent border-t-2 border-accent' : 'text-muted hover:text-white'
       }`}
     >
-      {s.charAt(0).toUpperCase() + s.slice(1)}
+      <span className="text-base">{icon}</span>
+      <span>{label}</span>
     </button>
   );
 
   return (
-    <div className="min-h-screen bg-bg flex flex-col max-w-md mx-auto">
-      <div className="flex-1 overflow-y-auto pb-16">
+    <div className="min-h-screen bg-bg text-white flex flex-col max-w-md mx-auto relative select-none">
+      <div className="flex-1 overflow-y-auto pb-20">
         {screen === 'dashboard' && <Dashboard />}
         {screen === 'scanner' && <Scanner />}
         {screen === 'trades' && <Trades />}
         {screen === 'settings' && <Settings />}
       </div>
-      <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-surface border-t border-border flex">
-        {nav('dashboard')}
-        {nav('scanner')}
-        {nav('trades')}
-        {nav('settings')}
+
+      <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-surface border-t border-border flex z-50">
+        {nav('dashboard', 'Dashboard', '📊')}
+        {nav('scanner', 'Scanner', '🔍')}
+        {nav('trades', 'Trades', '📜')}
+        {nav('settings', 'Settings', '⚙️')}
       </nav>
     </div>
   );
 }
-

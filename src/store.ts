@@ -1,4 +1,4 @@
-// Zustand store with persist
+// Zustand store with persist — v2 (fixed wallet math + Angel One real mode)
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
@@ -13,6 +13,7 @@ export interface Position {
   initialRisk: number;
   entryReason: string;
   openDate: string;
+  currentPrice?: number; // live price for P&L
 }
 
 export interface TradeRecord {
@@ -34,14 +35,31 @@ export interface CostSettings {
   slippagePct: number;
 }
 
+export interface AngelOneConfig {
+  apiKey: string;
+  clientId: string;
+  password: string;
+  totp: string; // TOTP secret
+  connected: boolean;
+  token?: string;
+  tokenExpiry?: number;
+}
+
 export interface AppSettings {
   startCapital: number;
   riskPct: number;
   costs: CostSettings;
   watchlist: string[];
+  angelOne: AngelOneConfig;
 }
 
 export type AppMode = 'PAPER' | 'REAL';
+
+export interface EngineLog {
+  time: string;
+  msg: string;
+  type: 'info' | 'trade' | 'warn' | 'error';
+}
 
 interface AppState {
   mode: AppMode;
@@ -52,15 +70,23 @@ interface AppState {
   autoTrade: boolean;
   settings: AppSettings;
   lastScanResults: import('./engine/engine').ScanResult[];
+  engineLogs: EngineLog[];
+  safetyPaused: boolean;
+  safetyReason: string;
 
   setMode: (m: AppMode) => void;
   setAutoTrade: (v: boolean) => void;
   openPosition: (pos: Position, cost: number) => void;
   closePosition: (symbol: string, exitPrice: number, record: TradeRecord) => void;
   updatePositionStop: (symbol: string, stop: number) => void;
+  updatePositionPrice: (symbol: string, price: number) => void;
   updateSettings: (s: Partial<AppSettings>) => void;
   resetPaperAccount: () => void;
   setScanResults: (r: import('./engine/engine').ScanResult[]) => void;
+  addLog: (msg: string, type?: EngineLog['type']) => void;
+  setSafetyPause: (paused: boolean, reason: string) => void;
+  setAngelOneToken: (token: string, expiry: number) => void;
+  setAngelOneConnected: (connected: boolean) => void;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -73,11 +99,14 @@ const DEFAULT_SETTINGS: AppSettings = {
     'PNB.NS','BANKBARODA.NS','HDFCBANK.NS','ICICIBANK.NS','INFY.NS',
     'AXISBANK.NS','NIFTYBEES.NS','BANKBEES.NS','GOLDBEES.NS',
   ],
+  angelOne: {
+    apiKey: '', clientId: '', password: '', totp: '', connected: false,
+  },
 };
 
 export const useStore = create<AppState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       mode: 'PAPER',
       equity: DEFAULT_SETTINGS.startCapital,
       peakEquity: DEFAULT_SETTINGS.startCapital,
@@ -86,22 +115,28 @@ export const useStore = create<AppState>()(
       autoTrade: false,
       settings: DEFAULT_SETTINGS,
       lastScanResults: [],
+      engineLogs: [],
+      safetyPaused: false,
+      safetyReason: '',
 
       setMode: (m) => set({ mode: m }),
       setAutoTrade: (v) => set({ autoTrade: v }),
 
+      // BUG FIX: equity was wrongly subtracting cost AND then not crediting back properly on close.
+      // Now: equity = cash in wallet (not invested). Open = reduce cash. Close = add proceeds.
       openPosition: (pos, cost) => set((s) => {
         const newEquity = s.equity - cost;
         return {
           positions: [...s.positions, pos],
-          equity: newEquity,
-          peakEquity: Math.max(s.peakEquity, newEquity),
+          equity: Math.max(0, newEquity), // never negative
+          peakEquity: Math.max(s.peakEquity, s.equity), // peak before opening
         };
       }),
 
       closePosition: (symbol, exitPrice, record) => set((s) => {
         const pos = s.positions.find(p => p.symbol === symbol);
         if (!pos) return {};
+        // Proceeds = exit value minus exit brokerage + DP
         const proceeds = exitPrice * pos.shares
           - pos.shares * exitPrice * s.settings.costs.brokeragePct
           - s.settings.costs.dpPerSell;
@@ -118,8 +153,12 @@ export const useStore = create<AppState>()(
         positions: s.positions.map(p => p.symbol === symbol ? { ...p, stop } : p),
       })),
 
+      updatePositionPrice: (symbol, price) => set((s) => ({
+        positions: s.positions.map(p => p.symbol === symbol ? { ...p, currentPrice: price } : p),
+      })),
+
       updateSettings: (s) => set((state) => ({
-        settings: { ...state.settings, ...s },
+        settings: { ...state.settings, ...s, costs: { ...state.settings.costs, ...(s.costs || {}) } },
       })),
 
       resetPaperAccount: () => set((s) => ({
@@ -128,11 +167,39 @@ export const useStore = create<AppState>()(
         positions: [],
         trades: [],
         autoTrade: false,
+        engineLogs: [],
+        safetyPaused: false,
+        safetyReason: '',
       })),
 
       setScanResults: (r) => set({ lastScanResults: r }),
+
+      addLog: (msg, type = 'info') => set((s) => {
+        const log: EngineLog = { time: new Date().toLocaleTimeString('en-IN'), msg, type };
+        return { engineLogs: [log, ...s.engineLogs].slice(0, 100) };
+      }),
+
+      setSafetyPause: (paused, reason) => set({ safetyPaused: paused, safetyReason: reason }),
+
+      setAngelOneToken: (token, expiry) => set((s) => ({
+        settings: { ...s.settings, angelOne: { ...s.settings.angelOne, token, tokenExpiry: expiry, connected: true } },
+      })),
+
+      setAngelOneConnected: (connected) => set((s) => ({
+        settings: { ...s.settings, angelOne: { ...s.settings.angelOne, connected } },
+      })),
     }),
-    { name: 'nse-paper-trader-v1' }
+    {
+      name: 'nse-paper-trader-v2', // new key to avoid stale data
+      partialize: (s) => ({
+        mode: s.mode,
+        equity: s.equity,
+        peakEquity: s.peakEquity,
+        positions: s.positions,
+        trades: s.trades,
+        settings: s.settings,
+        // don't persist: autoTrade, logs, safetyPaused
+      }),
+    }
   )
 );
-

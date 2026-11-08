@@ -1,70 +1,97 @@
 import React, { useState } from 'react';
 import { useStore } from '../store';
-import { runEngineTick } from '../engine/engine';
-import type { ScanResult } from '../engine/engine';
+import { scanWatchlist, type ScanResult } from '../engine/engine';
 
 export default function Scanner() {
   const store = useStore();
   const [loading, setLoading] = useState(false);
 
-  async function scan() {
+  async function handleScan() {
     setLoading(true);
-    const results = await runEngineTick();
-    if (results.length > 0) useStore.getState().setScanResults(results);
-    setLoading(false);
+    try {
+      await scanWatchlist();
+    } finally {
+      setLoading(false);
+    }
   }
 
   const results: ScanResult[] = store.lastScanResults;
 
-  const statusColor = (s: string) => {
-    if (s === 'BUY') return 'text-green';
-    if (s === 'WAIT') return 'text-warn';
-    return 'text-muted';
+  const statusBadge = (s: string) => {
+    if (s === 'BUY') {
+      return <span className="bg-green/20 text-green border border-green/40 px-2 py-0.5 rounded text-xs font-bold">BUY</span>;
+    }
+    if (s === 'WAIT') {
+      return <span className="bg-warn/20 text-warn border border-warn/40 px-2 py-0.5 rounded text-xs font-bold">WAIT</span>;
+    }
+    return <span className="bg-border text-muted px-2 py-0.5 rounded text-xs font-medium">SKIP</span>;
   };
 
-  const biasColor = (b: string) => {
-    if (b === 'UP') return 'text-green';
-    if (b === 'DOWN') return 'text-red';
-    return 'text-muted';
+  const biasBadge = (b: string) => {
+    if (b === 'UP') return <span className="text-green font-semibold">Weekly ▲ UP</span>;
+    if (b === 'DOWN') return <span className="text-red font-semibold">Weekly ▼ DOWN</span>;
+    return <span className="text-muted">Weekly ▬ NEUTRAL</span>;
   };
 
   return (
     <div className="p-4 space-y-4">
       <div className="flex items-center justify-between pt-2">
-        <h1 className="text-lg font-bold">Scanner</h1>
+        <div>
+          <h1 className="text-lg font-bold text-white">NSE Scanner</h1>
+          <p className="text-xs text-muted">Rules: Weekly Trend + Confluence ≥4/6 + R:R ≥2</p>
+        </div>
         <button
-          onClick={scan}
+          onClick={handleScan}
           disabled={loading}
-          className="text-xs bg-accent/10 text-accent border border-accent/30 px-3 py-1.5 rounded-lg font-semibold disabled:opacity-50"
+          className="text-xs bg-accent text-bg px-3.5 py-2 rounded-xl font-bold disabled:opacity-50 shadow"
         >
-          {loading ? '...' : '⚡ Scan'}
+          {loading ? 'Scanning...' : '⚡ Scan Watchlist'}
         </button>
       </div>
 
       {results.length === 0 && (
-        <div className="bg-surface rounded-xl p-6 border border-border text-center text-muted text-sm">
-          Hit Scan to analyse the watchlist
+        <div className="bg-surface rounded-xl p-8 border border-border text-center space-y-2">
+          <div className="text-2xl">🔍</div>
+          <div className="text-white font-semibold text-sm">No Scan Results Yet</div>
+          <div className="text-xs text-muted">Tap "Scan Watchlist" to scan 21 NSE stocks using the 9 skills</div>
         </div>
       )}
 
-      <div className="space-y-2">
+      <div className="space-y-2.5">
         {results.map(r => (
-          <div key={r.symbol} className="bg-surface rounded-xl p-4 border border-border">
+          <div key={r.symbol} className="bg-surface rounded-xl p-4 border border-border space-y-2">
             <div className="flex items-center justify-between">
-              <div className="font-semibold">{r.symbol.replace('.NS', '')}</div>
-              <div className="flex items-center gap-3">
-                <span className={`text-xs font-semibold ${biasColor(r.weeklyBias)}`}>
-                  W:{r.weeklyBias}
+              <div>
+                <span className="font-bold text-base text-white">{r.symbol.replace('.NS', '')}</span>
+                {r.currentPrice && (
+                  <span className="text-xs text-muted ml-2">₹{r.currentPrice.toFixed(2)}</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs bg-bg px-2 py-0.5 rounded text-white border border-border">
+                  Score {r.score}/6
                 </span>
-                <span className="text-xs text-muted">{r.score}/6</span>
-                <span className={`text-xs font-bold ${statusColor(r.status)}`}>{r.status}</span>
+                {statusBadge(r.status)}
               </div>
             </div>
-            {r.reason && <div className="text-xs text-muted mt-1">{r.reason}</div>}
+
+            <div className="flex items-center justify-between text-xs pt-1 border-t border-border/50">
+              <div>{biasBadge(r.weeklyBias)}</div>
+              {r.rr ? (
+                <div className="text-muted">
+                  Stop: <span className="text-warn">₹{r.stop?.toFixed(1)}</span> • T1: <span className="text-green">₹{r.target1?.toFixed(1)}</span> • R:R: <span className="font-bold text-white">{r.rr.toFixed(1)}</span>
+                </div>
+              ) : null}
+            </div>
+
+            {r.reason && (
+              <div className="text-[11px] text-muted bg-bg/50 px-2 py-1 rounded">
+                {r.reason}
+              </div>
+            )}
           </div>
         ))}
       </div>
     </div>
   );
 }
-
