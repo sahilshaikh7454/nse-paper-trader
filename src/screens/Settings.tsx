@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore, type AngelOneConfig } from '../store';
-import { angelLogin } from '../engine/angelone';
+import { angelLogin, getOrGenerateTOTP } from '../engine/angelone';
 
 export default function Settings() {
   const store = useStore();
@@ -15,11 +15,32 @@ export default function Settings() {
   const [clientId, setClientId] = useState(store.settings.angelOne.clientId || '');
   const [password, setPassword] = useState(store.settings.angelOne.password || '');
   const [totp, setTotp] = useState(store.settings.angelOne.totp || '');
+  const [liveOtp, setLiveOtp] = useState<string | null>(null);
   const [angelStatus, setAngelStatus] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
   const [saved, setSaved] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+
+  // Live preview of calculated TOTP
+  useEffect(() => {
+    let active = true;
+    async function updateCode() {
+      if (!totp || totp.trim().length < 6) {
+        setLiveOtp(null);
+        return;
+      }
+      try {
+        const code = await getOrGenerateTOTP(totp);
+        if (active) setLiveOtp(code);
+      } catch {
+        if (active) setLiveOtp('Invalid Key');
+      }
+    }
+    updateCode();
+    const interval = setInterval(updateCode, 4000);
+    return () => { active = false; clearInterval(interval); };
+  }, [totp]);
 
   async function handleAngelConnect() {
     setConnecting(true);
@@ -27,7 +48,7 @@ export default function Settings() {
 
     const cfg: AngelOneConfig = {
       apiKey: apiKey.trim(),
-      clientId: clientId.trim(),
+      clientId: clientId.trim().toUpperCase(),
       password: password.trim(),
       totp: totp.trim(),
       connected: false,
@@ -48,7 +69,7 @@ export default function Settings() {
       setAngelStatus('✓ Connected successfully to Angel One!');
       store.addLog(`Angel One account ${cfg.clientId} connected successfully`, 'info');
     } else {
-      setAngelStatus(`✗ Connection failed: ${res.error || 'Unknown error'}`);
+      setAngelStatus(`✗ Connection failed: ${res.error || 'Check credentials'}`);
       store.addLog(`Angel One connection failed: ${res.error}`, 'error');
     }
   }
@@ -89,7 +110,7 @@ export default function Settings() {
       angelOne: {
         ...store.settings.angelOne,
         apiKey: apiKey.trim(),
-        clientId: clientId.trim(),
+        clientId: clientId.trim().toUpperCase(),
         password: password.trim(),
         totp: totp.trim(),
       },
@@ -116,7 +137,7 @@ export default function Settings() {
         <div className="flex items-center justify-between">
           <div className="font-bold text-sm text-white flex items-center gap-2">
             <span>Angel One SmartAPI</span>
-            <span className={`w-2 h-2 rounded-full ${store.settings.angelOne.connected ? 'bg-green' : 'bg-muted'}`} />
+            <span className={`w-2 h-2 rounded-full ${store.settings.angelOne.connected ? 'bg-green animate-pulse' : 'bg-muted'}`} />
           </div>
           {store.settings.angelOne.connected ? (
             <span className="text-[11px] bg-green/20 text-green px-2 py-0.5 rounded font-bold">CONNECTED</span>
@@ -129,37 +150,56 @@ export default function Settings() {
         </p>
 
         <div className="space-y-2.5 pt-1">
-          <Field
-            label="SmartAPI Key"
-            value={apiKey}
-            onChange={setApiKey}
-            placeholder="e.g. AbC123XyZ"
-          />
-          <Field
-            label="Client ID / Code"
-            value={clientId}
-            onChange={setClientId}
-            placeholder="e.g. S123456"
-          />
-          <Field
-            label="Password / MPIN"
-            type="password"
-            value={password}
-            onChange={setPassword}
-            placeholder="Angel One Login PIN"
-          />
-          <Field
-            label="TOTP Secret Key"
-            type="password"
-            value={totp}
-            onChange={setTotp}
-            placeholder="Base32 TOTP secret from SmartAPI"
-          />
+          <div>
+            <Field
+              label="SmartAPI Key"
+              value={apiKey}
+              onChange={setApiKey}
+              placeholder="e.g. uJ9x... (from SmartAPI Dashboard)"
+            />
+          </div>
+
+          <div>
+            <Field
+              label="Client ID / Code"
+              value={clientId}
+              onChange={setClientId}
+              placeholder="e.g. S123456 (Angel One User ID)"
+            />
+          </div>
+
+          <div>
+            <Field
+              label="Password / MPIN"
+              type="password"
+              value={password}
+              onChange={setPassword}
+              placeholder="Angel One 4-digit/6-digit Login PIN"
+            />
+            <p className="text-[10px] text-muted mt-0.5">⚠️ Note: Enter your Angel One App Login PIN, not email password.</p>
+          </div>
+
+          <div>
+            <Field
+              label="TOTP Secret Key or 6-digit OTP"
+              type="password"
+              value={totp}
+              onChange={setTotp}
+              placeholder="Base32 Key from enable-totp OR 6-digit code"
+            />
+            {liveOtp && (
+              <div className="mt-1.5 text-xs bg-bg p-2 rounded-lg border border-border flex items-center justify-between">
+                <span className="text-muted">Live 6-Digit OTP:</span>
+                <span className="font-mono font-bold text-accent tracking-widest text-sm">{liveOtp}</span>
+              </div>
+            )}
+            <p className="text-[10px] text-muted mt-0.5">Paste the Base32 Key or current 6-digit Authenticator code.</p>
+          </div>
         </div>
 
         {angelStatus && (
-          <div className={`text-xs p-2 rounded ${
-            angelStatus.startsWith('✓') ? 'bg-green/10 text-green border border-green/30' : 'bg-red/10 text-red border border-red/30'
+          <div className={`text-xs p-2.5 rounded-lg border font-mono ${
+            angelStatus.startsWith('✓') ? 'bg-green/10 text-green border-green/30' : 'bg-red/10 text-red border-red/30'
           }`}>
             {angelStatus}
           </div>
@@ -169,7 +209,7 @@ export default function Settings() {
           <button
             onClick={handleAngelConnect}
             disabled={connecting || !apiKey || !clientId || !password || !totp}
-            className="flex-1 bg-accent text-bg py-2.5 rounded-lg font-bold text-xs disabled:opacity-50"
+            className="flex-1 bg-accent text-bg py-2.5 rounded-lg font-bold text-xs disabled:opacity-50 shadow"
           >
             {connecting ? 'Authenticating...' : store.settings.angelOne.connected ? 'Re-Connect Angel One' : 'Connect Angel One'}
           </button>
@@ -189,7 +229,7 @@ export default function Settings() {
         <div className="flex items-center justify-between">
           <div>
             <div className="font-bold text-sm text-white">Muhurat / Special Session</div>
-            <div className="text-xs text-muted">Override market hours filter for special 1-hour sessions</div>
+            <div className="text-xs text-muted">Allow trading outside regular Mon–Fri hours</div>
           </div>
           <button
             onClick={() => store.updateSettings({ muhuratMode: !store.settings.muhuratMode })}
@@ -274,7 +314,7 @@ function Field({
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-accent placeholder:text-muted/50"
+        className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-accent placeholder:text-muted/50 font-mono"
       />
     </div>
   );

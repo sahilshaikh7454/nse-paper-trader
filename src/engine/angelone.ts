@@ -22,9 +22,9 @@ async function apiCall(
     'X-ClientLocalIP': '127.0.0.1',
     'X-ClientPublicIP': '127.0.0.1',
     'X-MACAddress': '00:00:00:00:00:00',
-    'X-PrivateKey': apiKey || '',
+    'X-PrivateKey': apiKey ? apiKey.trim() : '',
   };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (token) headers['Authorization'] = `Bearer ${token.trim()}`;
 
   if (Capacitor.isNativePlatform()) {
     const res = await CapacitorHttp.request({
@@ -35,7 +35,12 @@ async function apiCall(
     });
     return typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
   } else {
-    const res = await fetch(BASE + path, {
+    // Dev or browser: proxy through /api/angel to avoid CORS
+    const url = typeof window !== 'undefined' && window.location.hostname === 'localhost'
+      ? `/api/angel${path}`
+      : BASE + path;
+
+    const res = await fetch(url, {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
@@ -44,12 +49,12 @@ async function apiCall(
   }
 }
 
-// TOTP generation (RFC 6238 compatible)
+// Robust TOTP generation (RFC 6238 compliant)
 export async function generateTOTP(secret: string): Promise<string> {
   const base32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  const secret_upper = secret.toUpperCase().replace(/\s/g, '');
+  const clean = secret.toUpperCase().replace(/\s/g, '').replace(/=+$/, '');
   let bits = '';
-  for (const c of secret_upper) {
+  for (const c of clean) {
     const idx = base32Chars.indexOf(c);
     if (idx >= 0) bits += idx.toString(2).padStart(5, '0');
   }
@@ -84,6 +89,15 @@ export async function generateTOTP(secret: string): Promise<string> {
   return code.toString().padStart(6, '0');
 }
 
+// Accepts either an already-calculated 6-digit TOTP or a Base32 secret string
+export async function getOrGenerateTOTP(input: string): Promise<string> {
+  const clean = input.trim().replace(/\s/g, '');
+  if (/^\d{6}$/.test(clean)) {
+    return clean;
+  }
+  return await generateTOTP(clean);
+}
+
 export interface AngelLoginResult {
   success: boolean;
   token?: string;
@@ -95,19 +109,24 @@ export interface AngelLoginResult {
 export async function angelLogin(cfg: AngelOneConfig): Promise<AngelLoginResult> {
   try {
     if (!cfg.apiKey || !cfg.clientId || !cfg.password || !cfg.totp) {
-      return { success: false, error: 'API Key, Client ID, PIN/Password & TOTP secret are required' };
+      return { success: false, error: 'Please enter API Key, Client ID, PIN & TOTP' };
     }
-    const totp = await generateTOTP(cfg.totp);
+
+    const totp = await getOrGenerateTOTP(cfg.totp);
+    const clientcode = cfg.clientId.trim().toUpperCase();
+    const password = cfg.password.trim();
+    const apiKey = cfg.apiKey.trim();
+
     const res = await apiCall(
       '/rest/auth/angelbroking/user/v1/loginByPassword',
       'POST',
       {
-        clientcode: cfg.clientId.trim(),
-        password: cfg.password.trim(),
+        clientcode,
+        password,
         totp,
       },
       undefined,
-      cfg.apiKey.trim()
+      apiKey
     );
 
     if (res && res.status && res.data?.jwtToken) {
@@ -118,7 +137,10 @@ export async function angelLogin(cfg: AngelOneConfig): Promise<AngelLoginResult>
         feedToken: res.data.feedToken,
       };
     }
-    return { success: false, error: res?.message || 'Login failed — check credentials' };
+
+    const errCode = res?.errorcode ? `[${res.errorcode}] ` : '';
+    const errMsg = res?.message || res?.data?.message || 'Login failed — check credentials';
+    return { success: false, error: `${errCode}${errMsg}` };
   } catch (e: any) {
     return { success: false, error: e?.message || String(e) };
   }
@@ -164,10 +186,9 @@ export async function angelPlaceOrder(
 ): Promise<AngelOrderResult> {
   try {
     if (!cfg.connected || !cfg.token) {
-      // Try re-authenticating first if credentials exist
       const loginRes = await angelLogin(cfg);
       if (!loginRes.success || !loginRes.token) {
-        return { success: false, error: 'Angel One not logged in: ' + (loginRes.error || 'auth failed') };
+        return { success: false, error: 'Angel One re-login failed: ' + (loginRes.error || 'auth error') };
       }
       cfg.token = loginRes.token;
     }
@@ -200,7 +221,7 @@ export async function angelPlaceOrder(
     if (res && res.status && res.data?.orderid) {
       return { success: true, orderId: res.data.orderid };
     }
-    return { success: false, error: res?.message || 'Order rejected by broker' };
+    return { success: false, error: res?.message || 'Order rejected by Angel One broker' };
   } catch (e: any) {
     return { success: false, error: e?.message || String(e) };
   }
