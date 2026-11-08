@@ -77,10 +77,12 @@ export function netRR(
   entry: number,
   stop: number,
   target: number,
-  costs: CostSettings
+  costs: CostSettings,
+  estimatedShares = 10
 ): number {
+  const dpPerShare = costs.dpPerSell / Math.max(1, estimatedShares);
   const costEntry = entry * costs.brokeragePct + entry * costs.slippagePct;
-  const costExit = target * costs.brokeragePct + costs.dpPerSell / 1 + target * costs.slippagePct;
+  const costExit = target * costs.brokeragePct + dpPerShare + target * costs.slippagePct;
   const netReward = target - entry - costEntry - costExit;
   const netRisk = entry - stop + costEntry;
   if (netRisk <= 0) return 0;

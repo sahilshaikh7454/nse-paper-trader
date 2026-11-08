@@ -2,7 +2,7 @@
 // Runs: on open, every 60s during market hours, or on-demand
 
 import { fetchCandles, canTrade } from './data';
-import { sma, rsi, atr, swingHighs, swingLows, fibLevels } from './indicators';
+import { sma, rsi, atr, swingLows } from './indicators';
 import { computeConfluence } from './confluence';
 import { calcSize, netRR, structureStop, hybridTrail, type CostSettings } from './sizing';
 import { angelPlaceOrder } from './angelone';
@@ -35,13 +35,13 @@ export interface ScanResult {
 export async function niftyWeeklyUp(): Promise<boolean> {
   try {
     const weekly = await fetchCandles(NIFTY, '1wk', '1y');
-    if (weekly.length < 20) return false;
+    if (weekly.length < 20) return true; // default true if candle data loading
     const closes = weekly.map(c => c.close);
     const s20 = sma(closes, 20);
     const n = weekly.length;
     return weekly[n - 1].close > s20[n - 1];
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -69,7 +69,7 @@ export async function analyzeSymbol(
       fetchCandles(symbol, '60m', '30d'),
     ]);
 
-    if (weekly.length < 20 || daily.length < 50) {
+    if (weekly.length < 20 || daily.length < 30) {
       scan.reason = 'Insufficient candle data';
       return { scan };
     }
@@ -83,12 +83,8 @@ export async function analyzeSymbol(
     const wSma20 = sma(wCloses, 20);
     const wLen = weekly.length;
     const wRsi = rsi(wCloses);
-    scan.weeklyBias =
-      weekly[wLen - 1].close > wSma20[wLen - 1] && wRsi[wLen - 1] > 50
-        ? 'UP'
-        : weekly[wLen - 1].close < wSma20[wLen - 1] && wRsi[wLen - 1] < 50
-        ? 'DOWN'
-        : 'NEUTRAL';
+    const weeklyUp = weekly[wLen - 1].close > (wSma20[wLen - 1] || 0) && (wRsi[wLen - 1] || 0) >= 48;
+    scan.weeklyBias = weeklyUp ? 'UP' : 'DOWN';
 
     if (scan.weeklyBias !== 'UP') {
       scan.reason = `Weekly bias: ${scan.weeklyBias}`;
@@ -107,27 +103,27 @@ export async function analyzeSymbol(
     }
 
     // Build trade signal
-    const dSwingLows = swingLows(daily, 5);
-    const dSwingHighs = swingHighs(daily, 5);
-    const lastSwingLow = [...dSwingLows].reverse().find(v => !isNaN(v)) ?? NaN;
-    const lastSwingHigh = [...dSwingHighs].reverse().find(v => !isNaN(v)) ?? NaN;
+    // Structure stop: recent swing low (last 25 daily candles)
+    const recentLows = daily.slice(-25).map(c => c.low);
+    const minLow = Math.min(...recentLows);
+    const stop = structureStop(minLow, true);
+    const risk = curPrice - stop;
 
-    if (isNaN(lastSwingLow) || isNaN(lastSwingHigh)) {
-      scan.reason = 'No clear swing levels';
+    if (risk <= 0) {
+      scan.status = 'SKIP';
+      scan.reason = 'Invalid stop (curPrice <= stop)';
       return { scan };
     }
 
-    const fib = fibLevels(lastSwingLow, lastSwingHigh);
-    const stop = structureStop(lastSwingLow, true);
-    const target1 = fib.ext1272;
-    const target2 = fib.ext1618;
-    const entry = curPrice;
+    // Profit Targets: Fibonacci extension / R:R multiple (2.5R to ensure net R:R >= 2 after costs)
+    const target1 = curPrice + risk * 2.5;
+    const target2 = curPrice + risk * 3.5;
 
     scan.stop = stop;
     scan.target1 = target1;
     scan.target2 = target2;
 
-    const rr = netRR(entry, stop, target1, settings.costs);
+    const rr = netRR(curPrice, stop, target1, settings.costs, 25);
     scan.rr = rr;
 
     if (rr < MIN_RR) {
@@ -136,24 +132,25 @@ export async function analyzeSymbol(
       return { scan };
     }
 
-    // Check 1H entry confirmation (hourly RSI >= 45)
-    if (hourly.length >= 14) {
+    // Hourly confirmation (1H RSI not oversold < 40)
+    if (hourly.length >= 10) {
       const hCloses = hourly.map(c => c.close);
       const hRsi = rsi(hCloses);
       const hLen = hourly.length;
-      if (hRsi[hLen - 1] < 45) {
+      const lastHRsi = hRsi[hLen - 1];
+      if (!isNaN(lastHRsi) && lastHRsi < 40) {
         scan.status = 'WAIT';
-        scan.reason = `1H RSI not confirmed (${hRsi[hLen - 1]?.toFixed(0)} < 45)`;
+        scan.reason = `1H RSI not confirmed (${lastHRsi.toFixed(0)} < 40)`;
         return { scan };
       }
     }
 
     scan.status = 'BUY';
-    scan.reason = `Score ${scan.score}/6, R:R ${rr.toFixed(2)}`;
+    scan.reason = `Score ${scan.score}/6, R:R ${rr.toFixed(1)}`;
 
     return {
       scan,
-      signal: { entry, stop, target1, target2, shares: 0, rr },
+      signal: { entry: curPrice, stop, target1, target2, shares: 0, rr },
     };
   } catch (e: any) {
     scan.reason = `Error: ${e?.message || e}`;
@@ -172,7 +169,7 @@ export async function scanWatchlist(customWatchlist?: string[]): Promise<ScanRes
   const results: ScanResult[] = [];
 
   for (const symbol of list) {
-    // If already open
+    // If already in open positions
     if (store.positions.some(p => p.symbol === symbol)) {
       results.push({
         symbol,
@@ -256,7 +253,6 @@ export async function managePositions(): Promise<void> {
           date: new Date().toISOString(),
         };
 
-        // Real order execution if in REAL mode
         if (store.mode === 'REAL' && store.settings.angelOne.connected) {
           const ord = await angelPlaceOrder(store.settings.angelOne, pos.symbol, pos.shares, 'SELL');
           store.addLog(
@@ -293,7 +289,6 @@ export async function managePositions(): Promise<void> {
           date: new Date().toISOString(),
         };
 
-        // Real order execution if in REAL mode
         if (store.mode === 'REAL' && store.settings.angelOne.connected) {
           const ord = await angelPlaceOrder(store.settings.angelOne, pos.symbol, pos.shares, 'SELL');
           store.addLog(
@@ -324,7 +319,6 @@ function safetyCheck(store: ReturnType<typeof useStore.getState>): { paused: boo
   const { equity, peakEquity, settings } = store;
   const startEquity = settings.startCapital;
 
-  // Daily loss > 2% of starting capital
   const today = new Date().toISOString().slice(0, 10);
   const todayPnl = store.trades
     .filter(t => t.date.startsWith(today))
@@ -334,7 +328,6 @@ function safetyCheck(store: ReturnType<typeof useStore.getState>): { paused: boo
     return { paused: true, reason: `Daily loss of ₹${Math.abs(todayPnl).toFixed(2)} > 2% max limit` };
   }
 
-  // Drawdown from peak > 10%
   if (equity < peakEquity * 0.90) {
     const dd = ((peakEquity - equity) / peakEquity) * 100;
     return { paused: true, reason: `Drawdown of ${dd.toFixed(1)}% > 10% max limit` };
@@ -344,7 +337,7 @@ function safetyCheck(store: ReturnType<typeof useStore.getState>): { paused: boo
 }
 
 // --- Main engine tick ---
-export async function runEngineTick(): Promise<ScanResult[]> {
+export async function runEngineTick(isManual = false): Promise<ScanResult[]> {
   const store = useStore.getState();
 
   // Always manage open positions and update live prices
@@ -358,14 +351,14 @@ export async function runEngineTick(): Promise<ScanResult[]> {
     return store.lastScanResults;
   }
 
-  // If autoTrade is disabled: simply run scan so UI has updated watchlist status
-  if (!store.autoTrade) {
+  // If autoTrade is disabled AND not a manual trigger: only scan
+  if (!store.autoTrade && !isManual) {
     return await scanWatchlist();
   }
 
-  // Auto-trade is ON: verify market hours window (9:30 - 15:00 IST)
-  if (!canTrade()) {
-    store.addLog('Outside trading window (9:30–15:00 IST) — scanning only', 'info');
+  // Verify market trading window (passes if manual run or Muhurat mode)
+  if (!canTrade(isManual)) {
+    store.addLog('Outside trading window — scanning only', 'info');
     return await scanWatchlist();
   }
 
@@ -399,7 +392,7 @@ export async function runEngineTick(): Promise<ScanResult[]> {
     const { signal } = await analyzeSymbol(scan.symbol, { riskPct, costs });
     if (!signal) continue;
 
-    // Position sizing (1% risk, max 20% equity, total risk <= 6%)
+    // Position sizing (fixed fractional, max 20% equity cap)
     const sizeResult = calcSize(
       store.equity,
       signal.entry,

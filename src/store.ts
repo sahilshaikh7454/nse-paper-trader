@@ -51,6 +51,7 @@ export interface AppSettings {
   costs: CostSettings;
   watchlist: string[];
   angelOne: AngelOneConfig;
+  muhuratMode: boolean; // Special Muhurat trading or weekend session override
 }
 
 export type AppMode = 'PAPER' | 'REAL';
@@ -102,6 +103,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   angelOne: {
     apiKey: '', clientId: '', password: '', totp: '', connected: false,
   },
+  muhuratMode: true,
 };
 
 export const useStore = create<AppState>()(

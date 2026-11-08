@@ -37,15 +37,10 @@ export default function Dashboard() {
     setTicking(true);
     setNotice(null);
     try {
-      const results = await runEngineTick();
+      const results = await runEngineTick(true);
       const buyCount = results.filter(r => r.status === 'BUY').length;
-      if (!isMarketOpen()) {
-        setNotice(`⚠️ NSE Market is CLOSED right now. Auto-trades execute Mon–Fri 9:30–15:00 IST. You can test paper trades directly from the Scanner tab.`);
-      } else if (!store.autoTrade) {
-        setNotice(`✓ Scanned ${results.length} stocks (${buyCount} BUY signals). Turn ON "Auto-Trade Engine" switch above to auto-execute.`);
-      } else {
-        setNotice(`✓ Engine tick complete: ${buyCount} BUY signals processed.`);
-      }
+      const openCount = useStore.getState().positions.length;
+      setNotice(`✓ Engine executed: ${buyCount} BUY setups found. Active Open Positions: ${openCount}/4.`);
     } catch (e: any) {
       setNotice(`Tick error: ${e?.message || e}`);
     } finally {

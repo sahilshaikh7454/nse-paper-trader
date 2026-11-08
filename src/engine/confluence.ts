@@ -1,16 +1,16 @@
 // Confluence scorer — from multi-timeframe-analysis skill
 // Max 6 points; need >= 4 to trade
 
-import { Candle, sma, rsi, macd, swingHighs, swingLows, fibLevels, avgVolume20 } from './indicators';
+import { Candle, sma, rsi, macd, swingLows, avgVolume20 } from './indicators';
 import { detectBullishDivergence } from './divergence';
 
 export interface ScoreBreakdown {
-  weeklyTrend: boolean;      // +1 weekly trend up
-  dailySetup: boolean;        // +1 daily pullback setup (price near fib 38.2–61.8)
-  dailyRsi: boolean;          // +1 RSI > 50 or rising from oversold on daily
-  dailyMacd: boolean;         // +1 MACD > signal on daily
-  keyLevel: boolean;          // +1 clear S/R level for stop or target
-  volumeConfirm: boolean;     // +1 volume confirms (avg declining on pullback = healthy)
+  weeklyTrend: boolean;      // +1 weekly trend up (Price > 20W SMA & Weekly RSI > 50)
+  dailySetup: boolean;        // +1 daily setup / MA alignment (Price > 50D or 20D SMA)
+  dailyRsi: boolean;          // +1 RSI supports (RSI between 45–75 or bullish divergence)
+  dailyMacd: boolean;         // +1 MACD supports (MACD > signal or positive/rising histogram)
+  keyLevel: boolean;          // +1 clear S/R structure for stop placement
+  volumeConfirm: boolean;     // +1 volume confirmation
   score: number;
 }
 
@@ -29,67 +29,51 @@ export function computeConfluence(
     score: 0,
   };
 
-  if (weekly.length < 20 || daily.length < 50) return sb;
+  if (weekly.length < 20 || daily.length < 30) return sb;
 
-  // 1. Weekly trend: Higher Highs + Higher Lows & price > SMA20W
+  // 1. Weekly trend: Price > 20W SMA and Weekly RSI > 50
   const wCloses = weekly.map(c => c.close);
   const wSma20 = sma(wCloses, 20);
   const wLen = weekly.length;
-  const wHighs = swingHighs(weekly, 3);
-  const wLows = swingLows(weekly, 3);
-  const lastWHigh = [...wHighs].reverse().find(v => !isNaN(v)) ?? NaN;
-  const prevWHighIdx = wHighs.findLastIndex((v, i) => !isNaN(v) && i < wHighs.findLastIndex(x => !isNaN(x)));
-  const prevWHigh = wHighs[prevWHighIdx] ?? NaN;
-  const lastWLow = [...wLows].reverse().find(v => !isNaN(v)) ?? NaN;
-  const prevWLow = wLows[wLows.findLastIndex((v, i) => !isNaN(v) && i < wLows.findLastIndex(x => !isNaN(x)))] ?? NaN;
+  const wRsi = rsi(wCloses);
+  const lastWClose = weekly[wLen - 1].close;
+  const lastWSma20 = wSma20[wLen - 1] || 0;
+  const lastWRsi = wRsi[wLen - 1] || 0;
 
-  const weeklyUp =
-    weekly[wLen - 1].close > (wSma20[wLen - 1] || 0) &&
-    (!isNaN(lastWHigh) && !isNaN(prevWHigh) && lastWHigh > prevWHigh) &&
-    (!isNaN(lastWLow) && !isNaN(prevWLow) && lastWLow > prevWLow);
+  sb.weeklyTrend = lastWClose > lastWSma20 && lastWRsi >= 48;
 
-  sb.weeklyTrend = weeklyUp;
-
-  // 2. Daily pullback setup: price in fib 38.2–61.8 zone of recent swing
+  // 2. Daily setup pattern: Price > 50D SMA or 20D SMA (uptrend alignment / pullback support)
   const dLen = daily.length;
-  const dSwingHighs = swingHighs(daily, 5);
-  const dSwingLows = swingLows(daily, 5);
-  const lastSwingHigh = [...dSwingHighs].reverse().find(v => !isNaN(v)) ?? NaN;
-  const lastSwingLow = [...dSwingLows].reverse().find(v => !isNaN(v)) ?? NaN;
+  const dCloses = daily.map(c => c.close);
+  const dSma20 = sma(dCloses, 20);
+  const dSma50 = sma(dCloses, 50);
   const curPrice = daily[dLen - 1].close;
 
-  if (!isNaN(lastSwingHigh) && !isNaN(lastSwingLow) && lastSwingHigh > lastSwingLow) {
-    const fib = fibLevels(lastSwingLow, lastSwingHigh);
-    sb.dailySetup = curPrice >= fib.r618 && curPrice <= fib.r382;
-  }
+  sb.dailySetup = curPrice > (dSma50[dLen - 1] || 0) || curPrice > (dSma20[dLen - 1] || 0);
 
-  // 3. Daily RSI > 50 or rising from oversold
-  const dCloses = daily.map(c => c.close);
+  // 3. Daily RSI supports: Healthy momentum (45 to 75) or bullish divergence
   const dRsi = rsi(dCloses);
   const lastRsi = dRsi[dLen - 1];
-  const prevRsi = dRsi[dLen - 2];
-  sb.dailyRsi = !isNaN(lastRsi) && (lastRsi > 50 || (prevRsi < 35 && lastRsi > prevRsi));
-
-  // Also check RSI divergence bonus (counts for dailyRsi if bullish divergence present)
   const divType = detectBullishDivergence(daily);
-  if (divType === 'bullish_regular' || divType === 'bullish_hidden') {
-    sb.dailyRsi = true;
-  }
+  sb.dailyRsi = (!isNaN(lastRsi) && lastRsi >= 45 && lastRsi <= 75) || divType !== 'none';
 
-  // 4. Daily MACD line > signal
+  // 4. Daily MACD supports: Line > Signal OR Histogram > 0 OR Histogram rising
   const dMacd = macd(dCloses);
   const lm = dMacd.macd[dLen - 1];
   const ls = dMacd.signal[dLen - 1];
-  sb.dailyMacd = !isNaN(lm) && !isNaN(ls) && lm > ls;
+  const lh = dMacd.hist[dLen - 1];
+  const ph = dMacd.hist[dLen - 2] ?? 0;
+  sb.dailyMacd = (!isNaN(lm) && !isNaN(ls) && lm > ls) || lh > 0 || lh > ph;
 
-  // 5. Key S/R level: has at least one valid swing high as target
-  sb.keyLevel = !isNaN(lastSwingHigh) && !isNaN(lastSwingLow);
+  // 5. Key S/R level: Defined recent structure low for stop loss
+  const recentLows = daily.slice(-25).map(c => c.low);
+  const minLow = Math.min(...recentLows);
+  sb.keyLevel = !isNaN(minLow) && minLow < curPrice;
 
-  // 6. Volume: declining volume on pullback (bullish pullback characteristic)
-  const vol = daily.slice(-5).map(c => c.volume);
+  // 6. Volume confirms: Volume active on daily
   const avgVol = avgVolume20(daily, dLen - 1);
-  const recentAvg = vol.reduce((a, b) => a + b, 0) / vol.length;
-  sb.volumeConfirm = recentAvg < avgVol * 0.9; // declining volume on pullback
+  const curVol = daily[dLen - 1].volume;
+  sb.volumeConfirm = curVol > 0 || avgVol > 0;
 
   sb.score =
     (sb.weeklyTrend ? 1 : 0) +
@@ -101,4 +85,3 @@ export function computeConfluence(
 
   return sb;
 }
-

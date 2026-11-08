@@ -4,6 +4,7 @@
 
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import type { Candle } from './indicators';
+import { useStore } from '../store';
 
 type YInterval = '1d' | '1wk' | '60m';
 
@@ -75,7 +76,7 @@ function parseCandles(data: YahooChart): Candle[] {
 
 // In-memory cache to avoid rate limiting
 const cache = new Map<string, { data: Candle[]; ts: number }>();
-const CACHE_TTL = 30_000; // 30 seconds
+const CACHE_TTL = 15_000; // 15 seconds for responsive live ticks
 
 export async function fetchCandles(symbol: string, interval: YInterval, range: string): Promise<Candle[]> {
   const key = `${symbol}|${interval}|${range}`;
@@ -93,13 +94,20 @@ export async function fetchCandles(symbol: string, interval: YInterval, range: s
     return cached?.data ?? [];
   } catch (err) {
     console.warn(`[Yahoo] Failed ${symbol} ${interval}:`, err);
-    return cached?.data ?? []; // return stale if any
+    return cached?.data ?? [];
   }
 }
 
+export function istNow(): Date {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+}
+
 // NSE market hours check (IST = UTC+5:30)
-// Regular hours: 9:15 - 15:30 Mon-Fri
+// Regular hours: 9:15 - 15:30 Mon-Fri (or anytime if Muhurat/special session override is active)
 export function isMarketOpen(): boolean {
+  try {
+    if (useStore.getState().settings.muhuratMode) return true;
+  } catch {}
   const ist = istNow();
   const day = ist.getDay(); // 0=Sun, 6=Sat
   if (day === 0 || day === 6) return false;
@@ -109,12 +117,12 @@ export function isMarketOpen(): boolean {
   return mins >= 9 * 60 + 15 && mins <= 15 * 60 + 30;
 }
 
-export function istNow(): Date {
-  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-}
-
-// Entry trading window per rules: 9:30 - 15:00 Mon-Fri
-export function canTrade(): boolean {
+// Entry trading window per rules: 9:30 - 15:00 Mon-Fri (or anytime in manual/Muhurat mode)
+export function canTrade(isManual = false): boolean {
+  if (isManual) return true;
+  try {
+    if (useStore.getState().settings.muhuratMode) return true;
+  } catch {}
   const ist = istNow();
   const day = ist.getDay();
   if (day === 0 || day === 6) return false;

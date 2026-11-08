@@ -186,12 +186,31 @@ export default function Settings() {
 
       {/* Trading Parameters */}
       <div className="bg-surface rounded-xl p-4 border border-border space-y-3">
-        <div className="font-bold text-sm text-white">Trading Parameters (Skills Logic)</div>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Starting Capital (₹)" value={capital} onChange={setCapital} type="number" />
-          <Field label="Risk per Trade (%)" value={riskPct} onChange={setRiskPct} type="number" />
-          <Field label="Brokerage per Side (%)" value={brokPct} onChange={setBrokPct} type="number" />
-          <Field label="DP Charge / Sell (₹)" value={dp} onChange={setDp} type="number" />
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="font-bold text-sm text-white">Muhurat / Special Session</div>
+            <div className="text-xs text-muted">Override market hours filter for special 1-hour sessions</div>
+          </div>
+          <button
+            onClick={() => store.updateSettings({ muhuratMode: !store.settings.muhuratMode })}
+            className={`w-12 h-6 rounded-full transition-colors relative ${
+              store.settings.muhuratMode ? 'bg-accent' : 'bg-border'
+            }`}
+          >
+            <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all shadow ${
+              store.settings.muhuratMode ? 'left-7' : 'left-1'
+            }`} />
+          </button>
+        </div>
+
+        <div className="pt-2 border-t border-border/50">
+          <div className="font-bold text-sm text-white mb-2">Trading Parameters (Skills Logic)</div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Starting Capital (₹)" value={capital} onChange={setCapital} type="number" />
+            <Field label="Risk per Trade (%)" value={riskPct} onChange={setRiskPct} type="number" />
+            <Field label="Brokerage per Side (%)" value={brokPct} onChange={setBrokPct} type="number" />
+            <Field label="DP Charge / Sell (₹)" value={dp} onChange={setDp} type="number" />
+          </div>
         </div>
       </div>
 
