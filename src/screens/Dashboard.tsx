@@ -7,6 +7,7 @@ export default function Dashboard() {
   const store = useStore();
   const [ticking, setTicking] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Portfolio calculations
   const cash = store.equity;
@@ -34,8 +35,22 @@ export default function Dashboard() {
 
   async function handleScan() {
     setTicking(true);
-    await runEngineTick();
-    setTicking(false);
+    setNotice(null);
+    try {
+      const results = await runEngineTick();
+      const buyCount = results.filter(r => r.status === 'BUY').length;
+      if (!isMarketOpen()) {
+        setNotice(`⚠️ NSE Market is CLOSED right now. Auto-trades execute Mon–Fri 9:30–15:00 IST. You can test paper trades directly from the Scanner tab.`);
+      } else if (!store.autoTrade) {
+        setNotice(`✓ Scanned ${results.length} stocks (${buyCount} BUY signals). Turn ON "Auto-Trade Engine" switch above to auto-execute.`);
+      } else {
+        setNotice(`✓ Engine tick complete: ${buyCount} BUY signals processed.`);
+      }
+    } catch (e: any) {
+      setNotice(`Tick error: ${e?.message || e}`);
+    } finally {
+      setTicking(false);
+    }
   }
 
   const ist = istNow();
@@ -109,8 +124,8 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="text-warn flex items-center justify-between">
-                <span>⚠ Angel One not connected</span>
-                <span className="text-[11px] underline">Set up in Settings</span>
+                <span>⚠️ Angel One not connected</span>
+                <span className="text-[11px] underline">Set up in Settings tab</span>
               </div>
             )}
           </div>
@@ -179,13 +194,21 @@ export default function Dashboard() {
       </div>
 
       {/* Manual scan button */}
-      <button
-        onClick={handleScan}
-        disabled={ticking}
-        className="w-full bg-accent text-bg py-3 rounded-xl font-bold text-sm active:opacity-90 disabled:opacity-50 shadow"
-      >
-        {ticking ? 'Scanning Watchlist & Market...' : '⚡ Run Engine & Scan Now'}
-      </button>
+      <div className="space-y-2">
+        <button
+          onClick={handleScan}
+          disabled={ticking}
+          className="w-full bg-accent text-bg py-3 rounded-xl font-bold text-sm active:opacity-90 disabled:opacity-50 shadow"
+        >
+          {ticking ? 'Scanning Watchlist & Market...' : '⚡ Run Engine & Scan Now'}
+        </button>
+
+        {notice && (
+          <div className="text-xs p-2.5 rounded-xl bg-surface border border-border text-muted">
+            {notice}
+          </div>
+        )}
+      </div>
 
       {/* Open Positions */}
       <div className="space-y-2">
@@ -203,8 +226,11 @@ export default function Dashboard() {
         </div>
 
         {store.positions.length === 0 && (
-          <div className="bg-surface rounded-xl p-5 border border-border text-center text-muted text-sm">
-            No open positions. Auto-trade or run scanner to find setups.
+          <div className="bg-surface rounded-xl p-5 border border-border text-center text-muted text-sm space-y-1">
+            <div>No open positions.</div>
+            <div className="text-xs text-muted/70">
+              Open the <strong>Scanner</strong> tab to test instant paper buy or scan signals.
+            </div>
           </div>
         )}
 

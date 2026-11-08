@@ -5,14 +5,78 @@ import { scanWatchlist, type ScanResult } from '../engine/engine';
 export default function Scanner() {
   const store = useStore();
   const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
   async function handleScan() {
     setLoading(true);
+    setMsg(null);
     try {
-      await scanWatchlist();
+      const res = await scanWatchlist();
+      const buyCount = res.filter(r => r.status === 'BUY').length;
+      setMsg(`Scanned ${res.length} stocks: ${buyCount} BUY signals found.`);
+    } catch (e: any) {
+      setMsg(`Scan failed: ${e?.message || e}`);
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleTestBuy(item: ScanResult) {
+    const entry = item.currentPrice || 100;
+    const stop = item.stop || entry * 0.98;
+    const target1 = item.target1 || entry * 1.05;
+    const target2 = item.target2 || entry * 1.08;
+    const riskPerShare = Math.max(0.5, entry - stop);
+
+    const riskPct = Math.min(1, Math.max(0.01, store.settings.riskPct / 100));
+    const riskRs = store.equity * riskPct;
+    let shares = Math.floor(riskRs / riskPerShare);
+
+    // Max 20% equity cap per position
+    const maxSharesByCap = Math.floor((store.equity * 0.20) / entry);
+    shares = Math.min(shares, maxSharesByCap);
+    if (shares < 1) shares = 1;
+
+    const fillPrice = entry * (1 + store.settings.costs.slippagePct);
+    const totalCost = fillPrice * shares * (1 + store.settings.costs.brokeragePct);
+
+    if (totalCost > store.equity) {
+      setMsg(`❌ Insufficient cash in wallet (Requires ₹${totalCost.toFixed(0)}, Available ₹${store.equity.toFixed(0)})`);
+      return;
+    }
+
+    if (store.positions.some(p => p.symbol === item.symbol)) {
+      setMsg(`❌ ${item.symbol.replace('.NS', '')} already has an open position`);
+      return;
+    }
+
+    if (store.positions.length >= 4) {
+      setMsg(`❌ Max 4 open positions limit reached`);
+      return;
+    }
+
+    store.openPosition(
+      {
+        symbol: item.symbol,
+        entry: fillPrice,
+        shares,
+        stop,
+        initialStop: stop,
+        target1,
+        target2,
+        initialRisk: shares * riskPerShare,
+        entryReason: `Manual Paper Test (Score ${item.score}/6, W: ${item.weeklyBias})`,
+        openDate: new Date().toISOString(),
+        currentPrice: fillPrice,
+      },
+      totalCost
+    );
+
+    store.addLog(
+      `[MANUAL PAPER BUY] ${item.symbol.replace('.NS', '')} x${shares} @ ₹${fillPrice.toFixed(2)} (Alloc: ₹${totalCost.toFixed(0)})`,
+      'trade'
+    );
+    setMsg(`✓ Opened Paper position in ${item.symbol.replace('.NS', '')} (${shares} shares)! Check Dashboard.`);
   }
 
   const results: ScanResult[] = store.lastScanResults;
@@ -38,7 +102,7 @@ export default function Scanner() {
       <div className="flex items-center justify-between pt-2">
         <div>
           <h1 className="text-lg font-bold text-white">NSE Scanner</h1>
-          <p className="text-xs text-muted">Rules: Weekly Trend + Confluence ≥4/6 + R:R ≥2</p>
+          <p className="text-xs text-muted">Skills: Trend + Confluence ≥4 + Pullback Fib + R:R ≥2</p>
         </div>
         <button
           onClick={handleScan}
@@ -48,6 +112,16 @@ export default function Scanner() {
           {loading ? 'Scanning...' : '⚡ Scan Watchlist'}
         </button>
       </div>
+
+      {msg && (
+        <div className={`text-xs p-2.5 rounded-xl border ${
+          msg.startsWith('✓') ? 'bg-green/10 text-green border-green/30' :
+          msg.startsWith('❌') ? 'bg-red/10 text-red border-red/30' :
+          'bg-surface text-muted border-border'
+        }`}>
+          {msg}
+        </div>
+      )}
 
       {results.length === 0 && (
         <div className="bg-surface rounded-xl p-8 border border-border text-center space-y-2">
@@ -64,7 +138,7 @@ export default function Scanner() {
               <div>
                 <span className="font-bold text-base text-white">{r.symbol.replace('.NS', '')}</span>
                 {r.currentPrice && (
-                  <span className="text-xs text-muted ml-2">₹{r.currentPrice.toFixed(2)}</span>
+                  <span className="text-xs text-muted ml-2 font-mono">₹{r.currentPrice.toFixed(2)}</span>
                 )}
               </div>
               <div className="flex items-center gap-2">
@@ -89,6 +163,17 @@ export default function Scanner() {
                 {r.reason}
               </div>
             )}
+
+            {/* Test paper trade button */}
+            <div className="pt-1 flex justify-end">
+              <button
+                onClick={() => handleTestBuy(r)}
+                className="text-[11px] bg-accent/15 border border-accent/40 text-accent hover:bg-accent/25 px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1"
+              >
+                <span>+</span>
+                <span>Test Paper Buy</span>
+              </button>
+            </div>
           </div>
         ))}
       </div>
