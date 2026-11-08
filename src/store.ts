@@ -114,7 +114,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   angelOne: {
     apiKey: '', clientId: '', password: '', totp: '', connected: false,
   },
-  muhuratMode: true,
+  muhuratMode: false, // Default false so app follows real NSE market hours strictly
 };
 
 export const useStore = create<AppState>()(

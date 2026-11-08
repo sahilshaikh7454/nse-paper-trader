@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore } from '../store';
 import { runEngineTick } from '../engine/engine';
 import { isMarketOpen, istNow } from '../engine/data';
@@ -8,6 +8,13 @@ export default function Dashboard() {
   const [ticking, setTicking] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [, setTick] = useState(0);
+
+  // Live real-time clock tick every second
+  useEffect(() => {
+    const timer = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const isReal = store.mode === 'REAL';
   const positions = isReal ? store.realPositions : store.paperPositions;
@@ -68,7 +75,9 @@ export default function Dashboard() {
           <h1 className="text-lg font-bold text-white">NSE Paper Trader</h1>
           <div className="text-[11px] text-muted flex items-center gap-1.5 mt-0.5">
             <span className={`w-2 h-2 rounded-full ${marketOpen ? 'bg-green animate-pulse' : 'bg-red'}`} />
-            <span>NSE {marketOpen ? 'OPEN' : 'CLOSED'}</span>
+            <span className={marketOpen ? 'text-green font-semibold' : 'text-red font-semibold'}>
+              NSE {marketOpen ? (store.settings.muhuratMode ? 'OPEN (Special Session)' : 'OPEN') : 'CLOSED'}
+            </span>
             <span>•</span>
             <span>{timeStr} IST</span>
           </div>
