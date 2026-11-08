@@ -28,29 +28,33 @@ export default function Scanner() {
     const target2 = item.target2 || entry * 1.08;
     const riskPerShare = Math.max(0.5, entry - stop);
 
+    const isReal = store.mode === 'REAL';
+    const activePositions = isReal ? store.realPositions : store.paperPositions;
+    const availableCash = isReal ? store.realCash : store.paperCash;
+
     const riskPct = Math.min(1, Math.max(0.01, store.settings.riskPct / 100));
-    const riskRs = store.equity * riskPct;
+    const riskRs = availableCash * riskPct;
     let shares = Math.floor(riskRs / riskPerShare);
 
     // Max 20% equity cap per position
-    const maxSharesByCap = Math.floor((store.equity * 0.20) / entry);
+    const maxSharesByCap = Math.floor((store.settings.startCapital * 0.20) / entry);
     shares = Math.min(shares, maxSharesByCap);
     if (shares < 1) shares = 1;
 
     const fillPrice = entry * (1 + store.settings.costs.slippagePct);
     const totalCost = fillPrice * shares * (1 + store.settings.costs.brokeragePct);
 
-    if (totalCost > store.equity) {
-      setMsg(`❌ Insufficient cash in wallet (Requires ₹${totalCost.toFixed(0)}, Available ₹${store.equity.toFixed(0)})`);
+    if (!isReal && totalCost > store.paperCash) {
+      setMsg(`❌ Insufficient cash in paper wallet (Requires ₹${totalCost.toFixed(0)}, Available ₹${store.paperCash.toFixed(0)})`);
       return;
     }
 
-    if (store.positions.some(p => p.symbol === item.symbol)) {
+    if (activePositions.some(p => p.symbol === item.symbol)) {
       setMsg(`❌ ${item.symbol.replace('.NS', '')} already has an open position`);
       return;
     }
 
-    if (store.positions.length >= 4) {
+    if (activePositions.length >= 4) {
       setMsg(`❌ Max 4 open positions limit reached`);
       return;
     }
@@ -65,18 +69,20 @@ export default function Scanner() {
         target1,
         target2,
         initialRisk: shares * riskPerShare,
-        entryReason: `Manual Paper Test (Score ${item.score}/6, W: ${item.weeklyBias})`,
+        entryReason: `Manual Test (Score ${item.score}/6, W: ${item.weeklyBias})`,
         openDate: new Date().toISOString(),
         currentPrice: fillPrice,
+        isReal,
       },
-      totalCost
+      totalCost,
+      isReal
     );
 
     store.addLog(
-      `[MANUAL PAPER BUY] ${item.symbol.replace('.NS', '')} x${shares} @ ₹${fillPrice.toFixed(2)} (Alloc: ₹${totalCost.toFixed(0)})`,
+      `[MANUAL BUY] ${item.symbol.replace('.NS', '')} x${shares} @ ₹${fillPrice.toFixed(2)} (Alloc: ₹${totalCost.toFixed(0)})`,
       'trade'
     );
-    setMsg(`✓ Opened Paper position in ${item.symbol.replace('.NS', '')} (${shares} shares)! Check Dashboard.`);
+    setMsg(`✓ Opened ${isReal ? 'REAL' : 'Paper'} position in ${item.symbol.replace('.NS', '')} (${shares} shares)! Check Dashboard.`);
   }
 
   const results: ScanResult[] = store.lastScanResults;

@@ -1,4 +1,4 @@
-// Zustand store with persist — v2 (fixed wallet math + Angel One real mode)
+// Zustand store with persist — v3 (Separate Paper vs Real state, fixed drawdown & sizing)
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
@@ -14,6 +14,8 @@ export interface Position {
   entryReason: string;
   openDate: string;
   currentPrice?: number; // live price for P&L
+  isReal?: boolean;
+  orderId?: string;
 }
 
 export interface TradeRecord {
@@ -27,6 +29,7 @@ export interface TradeRecord {
   pnl: number;
   rResult: number;
   date: string;
+  isReal?: boolean;
 }
 
 export interface CostSettings {
@@ -51,7 +54,7 @@ export interface AppSettings {
   costs: CostSettings;
   watchlist: string[];
   angelOne: AngelOneConfig;
-  muhuratMode: boolean; // Special Muhurat trading or weekend session override
+  muhuratMode: boolean;
 }
 
 export type AppMode = 'PAPER' | 'REAL';
@@ -64,10 +67,6 @@ export interface EngineLog {
 
 interface AppState {
   mode: AppMode;
-  equity: number;
-  peakEquity: number;
-  positions: Position[];
-  trades: TradeRecord[];
   autoTrade: boolean;
   settings: AppSettings;
   lastScanResults: import('./engine/engine').ScanResult[];
@@ -75,11 +74,23 @@ interface AppState {
   safetyPaused: boolean;
   safetyReason: string;
 
+  // PAPER MODE STATE
+  paperCash: number;
+  paperPeakValue: number;
+  paperPositions: Position[];
+  paperTrades: TradeRecord[];
+
+  // REAL MODE STATE
+  realCash: number;
+  realPeakValue: number;
+  realPositions: Position[];
+  realTrades: TradeRecord[];
+
   setMode: (m: AppMode) => void;
   setAutoTrade: (v: boolean) => void;
-  openPosition: (pos: Position, cost: number) => void;
-  closePosition: (symbol: string, exitPrice: number, record: TradeRecord) => void;
-  updatePositionStop: (symbol: string, stop: number) => void;
+  openPosition: (pos: Position, cost: number, isReal?: boolean) => void;
+  closePosition: (symbol: string, exitPrice: number, record: TradeRecord, isReal?: boolean) => void;
+  updatePositionStop: (symbol: string, stop: number, isReal?: boolean) => void;
   updatePositionPrice: (symbol: string, price: number) => void;
   updateSettings: (s: Partial<AppSettings>) => void;
   resetPaperAccount: () => void;
@@ -108,12 +119,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 export const useStore = create<AppState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       mode: 'PAPER',
-      equity: DEFAULT_SETTINGS.startCapital,
-      peakEquity: DEFAULT_SETTINGS.startCapital,
-      positions: [],
-      trades: [],
       autoTrade: false,
       settings: DEFAULT_SETTINGS,
       lastScanResults: [],
@@ -121,57 +128,108 @@ export const useStore = create<AppState>()(
       safetyPaused: false,
       safetyReason: '',
 
-      setMode: (m) => set({ mode: m }),
+      paperCash: DEFAULT_SETTINGS.startCapital,
+      paperPeakValue: DEFAULT_SETTINGS.startCapital,
+      paperPositions: [],
+      paperTrades: [],
+
+      realCash: DEFAULT_SETTINGS.startCapital,
+      realPeakValue: DEFAULT_SETTINGS.startCapital,
+      realPositions: [],
+      realTrades: [],
+
+      setMode: (m) => set({ mode: m, safetyPaused: false, safetyReason: '' }),
       setAutoTrade: (v) => set({ autoTrade: v }),
 
-      // BUG FIX: equity was wrongly subtracting cost AND then not crediting back properly on close.
-      // Now: equity = cash in wallet (not invested). Open = reduce cash. Close = add proceeds.
-      openPosition: (pos, cost) => set((s) => {
-        const newEquity = s.equity - cost;
-        return {
-          positions: [...s.positions, pos],
-          equity: Math.max(0, newEquity), // never negative
-          peakEquity: Math.max(s.peakEquity, s.equity), // peak before opening
-        };
+      openPosition: (pos, cost, isReal = false) => set((s) => {
+        if (isReal) {
+          const positions = [...s.realPositions, { ...pos, isReal: true }];
+          const posVal = positions.reduce((sum, p) => sum + p.shares * (p.currentPrice ?? p.entry), 0);
+          return {
+            realPositions: positions,
+            realPeakValue: Math.max(s.realPeakValue, posVal),
+          };
+        } else {
+          const newCash = Math.max(0, s.paperCash - cost);
+          const positions = [...s.paperPositions, { ...pos, isReal: false }];
+          const posVal = positions.reduce((sum, p) => sum + p.shares * (p.currentPrice ?? p.entry), 0);
+          const totalPort = newCash + posVal;
+          return {
+            paperCash: newCash,
+            paperPositions: positions,
+            paperPeakValue: Math.max(s.paperPeakValue, totalPort),
+          };
+        }
       }),
 
-      closePosition: (symbol, exitPrice, record) => set((s) => {
-        const pos = s.positions.find(p => p.symbol === symbol);
-        if (!pos) return {};
-        // Proceeds = exit value minus exit brokerage + DP
-        const proceeds = exitPrice * pos.shares
-          - pos.shares * exitPrice * s.settings.costs.brokeragePct
-          - s.settings.costs.dpPerSell;
-        const newEquity = s.equity + proceeds;
-        return {
-          positions: s.positions.filter(p => p.symbol !== symbol),
-          trades: [...s.trades, record],
-          equity: newEquity,
-          peakEquity: Math.max(s.peakEquity, newEquity),
-        };
+      closePosition: (symbol, exitPrice, record, isReal = false) => set((s) => {
+        if (isReal) {
+          const positions = s.realPositions.filter(p => p.symbol !== symbol);
+          return {
+            realPositions: positions,
+            realTrades: [...s.realTrades, { ...record, isReal: true }],
+          };
+        } else {
+          const pos = s.paperPositions.find(p => p.symbol === symbol);
+          if (!pos) return {};
+          const proceeds = exitPrice * pos.shares
+            - pos.shares * exitPrice * s.settings.costs.brokeragePct
+            - s.settings.costs.dpPerSell;
+          const newCash = s.paperCash + proceeds;
+          const positions = s.paperPositions.filter(p => p.symbol !== symbol);
+          const posVal = positions.reduce((sum, p) => sum + p.shares * (p.currentPrice ?? p.entry), 0);
+          const totalPort = newCash + posVal;
+          return {
+            paperCash: newCash,
+            paperPositions: positions,
+            paperTrades: [...s.paperTrades, { ...record, isReal: false }],
+            paperPeakValue: Math.max(s.paperPeakValue, totalPort),
+          };
+        }
       }),
 
-      updatePositionStop: (symbol, stop) => set((s) => ({
-        positions: s.positions.map(p => p.symbol === symbol ? { ...p, stop } : p),
-      })),
+      updatePositionStop: (symbol, stop, isReal = false) => set((s) => {
+        if (isReal) {
+          return {
+            realPositions: s.realPositions.map(p => p.symbol === symbol ? { ...p, stop } : p),
+          };
+        } else {
+          return {
+            paperPositions: s.paperPositions.map(p => p.symbol === symbol ? { ...p, stop } : p),
+          };
+        }
+      }),
 
-      updatePositionPrice: (symbol, price) => set((s) => ({
-        positions: s.positions.map(p => p.symbol === symbol ? { ...p, currentPrice: price } : p),
-      })),
+      updatePositionPrice: (symbol, price) => set((s) => {
+        const update = (list: Position[]) =>
+          list.map(p => p.symbol === symbol ? { ...p, currentPrice: price } : p);
+
+        const newPaper = update(s.paperPositions);
+        const paperVal = s.paperCash + newPaper.reduce((sum, p) => sum + p.shares * (p.currentPrice ?? p.entry), 0);
+
+        const newReal = update(s.realPositions);
+        const realVal = s.realCash + newReal.reduce((sum, p) => sum + p.shares * (p.currentPrice ?? p.entry), 0);
+
+        return {
+          paperPositions: newPaper,
+          paperPeakValue: Math.max(s.paperPeakValue, paperVal),
+          realPositions: newReal,
+          realPeakValue: Math.max(s.realPeakValue, realVal),
+        };
+      }),
 
       updateSettings: (s) => set((state) => ({
         settings: { ...state.settings, ...s, costs: { ...state.settings.costs, ...(s.costs || {}) } },
       })),
 
       resetPaperAccount: () => set((s) => ({
-        equity: s.settings.startCapital,
-        peakEquity: s.settings.startCapital,
-        positions: [],
-        trades: [],
-        autoTrade: false,
-        engineLogs: [],
+        paperCash: s.settings.startCapital,
+        paperPeakValue: s.settings.startCapital,
+        paperPositions: [],
+        paperTrades: [],
         safetyPaused: false,
         safetyReason: '',
+        engineLogs: [{ time: new Date().toLocaleTimeString('en-IN'), msg: 'Virtual paper account reset to ₹10,000', type: 'info' }],
       })),
 
       setScanResults: (r) => set({ lastScanResults: r }),
@@ -192,15 +250,18 @@ export const useStore = create<AppState>()(
       })),
     }),
     {
-      name: 'nse-paper-trader-v2', // new key to avoid stale data
+      name: 'nse-paper-trader-v3', // Fresh storage key to clear out corrupted 22-position state
       partialize: (s) => ({
         mode: s.mode,
-        equity: s.equity,
-        peakEquity: s.peakEquity,
-        positions: s.positions,
-        trades: s.trades,
         settings: s.settings,
-        // don't persist: autoTrade, logs, safetyPaused
+        paperCash: s.paperCash,
+        paperPeakValue: s.paperPeakValue,
+        paperPositions: s.paperPositions,
+        paperTrades: s.paperTrades,
+        realCash: s.realCash,
+        realPeakValue: s.realPeakValue,
+        realPositions: s.realPositions,
+        realTrades: s.realTrades,
       }),
     }
   )

@@ -2,7 +2,7 @@
 // Runs: on open, every 60s during market hours, or on-demand
 
 import { fetchCandles, canTrade } from './data';
-import { sma, rsi, atr, swingLows } from './indicators';
+import { sma, rsi, atr } from './indicators';
 import { computeConfluence } from './confluence';
 import { calcSize, netRR, structureStop, hybridTrail, type CostSettings } from './sizing';
 import { angelPlaceOrder } from './angelone';
@@ -35,7 +35,7 @@ export interface ScanResult {
 export async function niftyWeeklyUp(): Promise<boolean> {
   try {
     const weekly = await fetchCandles(NIFTY, '1wk', '1y');
-    if (weekly.length < 20) return true; // default true if candle data loading
+    if (weekly.length < 20) return true;
     const closes = weekly.map(c => c.close);
     const s20 = sma(closes, 20);
     const n = weekly.length;
@@ -103,7 +103,6 @@ export async function analyzeSymbol(
     }
 
     // Build trade signal
-    // Structure stop: recent swing low (last 25 daily candles)
     const recentLows = daily.slice(-25).map(c => c.low);
     const minLow = Math.min(...recentLows);
     const stop = structureStop(minLow, true);
@@ -115,7 +114,7 @@ export async function analyzeSymbol(
       return { scan };
     }
 
-    // Profit Targets: Fibonacci extension / R:R multiple (2.5R to ensure net R:R >= 2 after costs)
+    // Profit Targets: 2.5R to ensure net R:R >= 2 after costs
     const target1 = curPrice + risk * 2.5;
     const target2 = curPrice + risk * 3.5;
 
@@ -132,7 +131,7 @@ export async function analyzeSymbol(
       return { scan };
     }
 
-    // Hourly confirmation (1H RSI not oversold < 40)
+    // Hourly confirmation
     if (hourly.length >= 10) {
       const hCloses = hourly.map(c => c.close);
       const hRsi = rsi(hCloses);
@@ -165,12 +164,15 @@ export async function scanWatchlist(customWatchlist?: string[]): Promise<ScanRes
   const costs = store.settings.costs;
   const riskPct = store.settings.riskPct / 100;
 
+  const isReal = store.mode === 'REAL';
+  const activePositions = isReal ? store.realPositions : store.paperPositions;
+
   const isNiftyUp = await niftyWeeklyUp();
   const results: ScanResult[] = [];
 
   for (const symbol of list) {
-    // If already in open positions
-    if (store.positions.some(p => p.symbol === symbol)) {
+    // If already open in active mode
+    if (activePositions.some(p => p.symbol === symbol)) {
       results.push({
         symbol,
         weeklyBias: 'UP',
@@ -199,10 +201,13 @@ export async function scanWatchlist(customWatchlist?: string[]): Promise<ScanRes
 // --- Manage open positions (trailing + exit) ---
 export async function managePositions(): Promise<void> {
   const store = useStore.getState();
-  const positions = store.positions;
-  if (positions.length === 0) return;
+  const allPositions = [
+    ...store.paperPositions.map(p => ({ ...p, isReal: false })),
+    ...store.realPositions.map(p => ({ ...p, isReal: true })),
+  ];
+  if (allPositions.length === 0) return;
 
-  for (const pos of positions) {
+  for (const pos of allPositions) {
     try {
       const daily = await fetchCandles(pos.symbol, '1d', '60d');
       if (daily.length < 5) continue;
@@ -215,8 +220,7 @@ export async function managePositions(): Promise<void> {
       const closes = daily.map(c => c.close);
       const atrArr = atr(daily);
       const atrVal = atrArr[dLen - 1] || (curPrice * 0.015);
-      const swLows = swingLows(daily, 5);
-      const recentSwLow = [...swLows].reverse().find(v => !isNaN(v)) ?? pos.stop;
+      const recentSwLow = pos.stop;
       const highestClose = Math.max(...closes.slice(-20));
 
       const newStop = hybridTrail({
@@ -251,9 +255,10 @@ export async function managePositions(): Promise<void> {
           pnl,
           rResult,
           date: new Date().toISOString(),
+          isReal: pos.isReal,
         };
 
-        if (store.mode === 'REAL' && store.settings.angelOne.connected) {
+        if (pos.isReal && store.settings.angelOne.connected) {
           const ord = await angelPlaceOrder(store.settings.angelOne, pos.symbol, pos.shares, 'SELL');
           store.addLog(
             `[REAL SELL STOP] ${pos.symbol} x${pos.shares} - ${ord.success ? 'Order ID: ' + ord.orderId : 'Error: ' + ord.error}`,
@@ -263,7 +268,7 @@ export async function managePositions(): Promise<void> {
           store.addLog(`[PAPER STOP] Exit ${pos.symbol} x${pos.shares} @ ₹${exitPrice.toFixed(2)} (P&L: ₹${pnl.toFixed(2)})`, 'trade');
         }
 
-        store.closePosition(pos.symbol, exitPrice, record);
+        store.closePosition(pos.symbol, exitPrice, record, pos.isReal);
         continue;
       }
 
@@ -287,9 +292,10 @@ export async function managePositions(): Promise<void> {
           pnl,
           rResult,
           date: new Date().toISOString(),
+          isReal: pos.isReal,
         };
 
-        if (store.mode === 'REAL' && store.settings.angelOne.connected) {
+        if (pos.isReal && store.settings.angelOne.connected) {
           const ord = await angelPlaceOrder(store.settings.angelOne, pos.symbol, pos.shares, 'SELL');
           store.addLog(
             `[REAL SELL TARGET] ${pos.symbol} x${pos.shares} - ${ord.success ? 'Order ID: ' + ord.orderId : 'Error: ' + ord.error}`,
@@ -299,13 +305,13 @@ export async function managePositions(): Promise<void> {
           store.addLog(`[PAPER TARGET] Exit ${pos.symbol} x${pos.shares} @ ₹${exitPrice.toFixed(2)} (P&L: ₹${pnl.toFixed(2)})`, 'trade');
         }
 
-        store.closePosition(pos.symbol, exitPrice, record);
+        store.closePosition(pos.symbol, exitPrice, record, pos.isReal);
         continue;
       }
 
       // Ratchet stop up if changed
       if (updatedStop > pos.stop) {
-        store.updatePositionStop(pos.symbol, updatedStop);
+        store.updatePositionStop(pos.symbol, updatedStop, pos.isReal);
         store.addLog(`[TRAIL] ${pos.symbol} stop raised to ₹${updatedStop.toFixed(2)}`, 'info');
       }
     } catch (e: any) {
@@ -314,23 +320,35 @@ export async function managePositions(): Promise<void> {
   }
 }
 
-// --- Safety checks ---
+// --- Safety checks (computed on TOTAL PORTFOLIO VALUE, not cash!) ---
 function safetyCheck(store: ReturnType<typeof useStore.getState>): { paused: boolean; reason: string } {
-  const { equity, peakEquity, settings } = store;
-  const startEquity = settings.startCapital;
+  const isReal = store.mode === 'REAL';
+  const positions = isReal ? store.realPositions : store.paperPositions;
+  const cash = isReal ? store.realCash : store.paperCash;
+  const startCapital = store.settings.startCapital;
+  const peak = isReal ? store.realPeakValue : store.paperPeakValue;
+
+  const positionsValue = positions.reduce(
+    (sum, p) => sum + p.shares * (p.currentPrice ?? p.entry),
+    0
+  );
+  const totalPortfolioValue = cash + positionsValue;
 
   const today = new Date().toISOString().slice(0, 10);
-  const todayPnl = store.trades
+  const trades = isReal ? store.realTrades : store.paperTrades;
+  const todayPnl = trades
     .filter(t => t.date.startsWith(today))
     .reduce((s, t) => s + t.pnl, 0);
 
-  if (todayPnl < -startEquity * 0.02) {
+  // Daily loss > 2% of starting capital
+  if (todayPnl < -startCapital * 0.02) {
     return { paused: true, reason: `Daily loss of ₹${Math.abs(todayPnl).toFixed(2)} > 2% max limit` };
   }
 
-  if (equity < peakEquity * 0.90) {
-    const dd = ((peakEquity - equity) / peakEquity) * 100;
-    return { paused: true, reason: `Drawdown of ${dd.toFixed(1)}% > 10% max limit` };
+  // Drawdown from peak > 10% on TOTAL PORTFOLIO VALUE
+  if (peak > 0 && totalPortfolioValue < peak * 0.90) {
+    const dd = ((peak - totalPortfolioValue) / peak) * 100;
+    return { paused: true, reason: `Portfolio drawdown of ${dd.toFixed(1)}% > 10% max limit` };
   }
 
   return { paused: false, reason: '' };
@@ -338,10 +356,10 @@ function safetyCheck(store: ReturnType<typeof useStore.getState>): { paused: boo
 
 // --- Main engine tick ---
 export async function runEngineTick(isManual = false): Promise<ScanResult[]> {
-  const store = useStore.getState();
-
   // Always manage open positions and update live prices
   await managePositions();
+
+  const store = useStore.getState();
 
   // Evaluate safety limits
   const safety = safetyCheck(store);
@@ -374,45 +392,60 @@ export async function runEngineTick(isManual = false): Promise<ScanResult[]> {
   const costs = store.settings.costs;
   const riskPct = store.settings.riskPct / 100;
 
-  // Calculate current total open risk in Rupees
-  const totalOpenRiskRs = store.positions.reduce(
-    (s, p) => s + p.shares * Math.max(0, p.entry - p.stop),
-    0
-  );
-
   for (const scan of results) {
     if (scan.status !== 'BUY') continue;
 
-    // Check if max 4 positions reached
-    if (store.positions.length >= 4) {
-      store.addLog(`Skipped ${scan.symbol}: Max 4 positions already open`, 'info');
+    // ALWAYS read fresh state on each iteration
+    const cur = useStore.getState();
+    const isReal = cur.mode === 'REAL';
+    const activePositions = isReal ? cur.realPositions : cur.paperPositions;
+    const availableCash = isReal ? cur.realCash : cur.paperCash;
+
+    // Strict Max 4 open positions limit!
+    if (activePositions.length >= 4) {
+      cur.addLog(`Max 4 open positions limit reached (${activePositions.length}/4) — skipping further entries`, 'info');
       break;
+    }
+
+    // Skip if already in open positions
+    if (activePositions.some(p => p.symbol === scan.symbol)) {
+      continue;
     }
 
     const { signal } = await analyzeSymbol(scan.symbol, { riskPct, costs });
     if (!signal) continue;
 
-    // Position sizing (fixed fractional, max 20% equity cap)
+    // Total open risk in Rupees
+    const totalOpenRiskRs = activePositions.reduce(
+      (s, p) => s + p.shares * Math.max(0, p.entry - p.stop),
+      0
+    );
+
+    const positionsVal = activePositions.reduce((s, p) => s + p.shares * (p.currentPrice ?? p.entry), 0);
+    const totalEquity = isReal ? cur.settings.startCapital : (availableCash + positionsVal);
+
+    // Position sizing (1% risk of equity, max 20% cap)
     const sizeResult = calcSize(
-      store.equity,
+      totalEquity,
       signal.entry,
       signal.stop,
       riskPct,
-      store.positions.length,
+      activePositions.length,
       totalOpenRiskRs,
       costs
     );
 
     if (sizeResult.shares < 1 || sizeResult.skipReason) {
-      store.addLog(`Sizing skip for ${scan.symbol}: ${sizeResult.skipReason || '0 shares'}`, 'info');
+      cur.addLog(`Sizing skip for ${scan.symbol}: ${sizeResult.skipReason || '0 shares'}`, 'info');
       continue;
     }
 
     const fillPrice = signal.entry * (1 + costs.slippagePct);
     const totalCost = fillPrice * sizeResult.shares * (1 + costs.brokeragePct);
 
-    if (totalCost > store.equity) {
-      store.addLog(`Insufficient wallet cash for ${scan.symbol} (Req: ₹${totalCost.toFixed(0)}, Avail: ₹${store.equity.toFixed(0)})`, 'warn');
+    // Check available cash in paper mode
+    if (!isReal && totalCost > cur.paperCash) {
+      cur.addLog(`Insufficient wallet cash for ${scan.symbol} (Req: ₹${totalCost.toFixed(0)}, Avail: ₹${cur.paperCash.toFixed(0)})`, 'warn');
       continue;
     }
 
@@ -428,31 +461,32 @@ export async function runEngineTick(isManual = false): Promise<ScanResult[]> {
       entryReason: `Score ${scan.score}/6, R:R ${signal.rr.toFixed(1)}`,
       openDate: new Date().toISOString(),
       currentPrice: fillPrice,
+      isReal,
     };
 
-    if (store.mode === 'REAL') {
-      if (!store.settings.angelOne.connected) {
-        store.addLog(`[REAL MODE] Cannot enter ${scan.symbol}: Angel One account not connected`, 'error');
+    if (isReal) {
+      if (!cur.settings.angelOne.connected) {
+        cur.addLog(`[REAL MODE] Cannot enter ${scan.symbol}: Angel One account not connected`, 'error');
         continue;
       }
 
       const ord = await angelPlaceOrder(
-        store.settings.angelOne,
+        cur.settings.angelOne,
         scan.symbol,
         sizeResult.shares,
         'BUY'
       );
 
       if (ord.success) {
-        store.openPosition(newPos, totalCost);
-        store.addLog(`[REAL BUY] ${scan.symbol} x${sizeResult.shares} @ ₹${fillPrice.toFixed(2)} (Order ID: ${ord.orderId})`, 'trade');
+        cur.openPosition(newPos, totalCost, true);
+        cur.addLog(`[REAL BUY] ${scan.symbol} x${sizeResult.shares} @ ₹${fillPrice.toFixed(2)} (Order ID: ${ord.orderId})`, 'trade');
       } else {
-        store.addLog(`[REAL ORDER FAILED] ${scan.symbol}: ${ord.error}`, 'error');
+        cur.addLog(`[REAL ORDER FAILED] ${scan.symbol}: ${ord.error}`, 'error');
       }
     } else {
       // PAPER MODE
-      store.openPosition(newPos, totalCost);
-      store.addLog(`[PAPER BUY] ${scan.symbol} x${sizeResult.shares} @ ₹${fillPrice.toFixed(2)} (Alloc: ₹${totalCost.toFixed(0)})`, 'trade');
+      cur.openPosition(newPos, totalCost, false);
+      cur.addLog(`[PAPER BUY] ${scan.symbol} x${sizeResult.shares} @ ₹${fillPrice.toFixed(2)} (Alloc: ₹${totalCost.toFixed(0)})`, 'trade');
     }
   }
 

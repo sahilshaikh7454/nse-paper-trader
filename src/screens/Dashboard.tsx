@@ -9,27 +9,33 @@ export default function Dashboard() {
   const [showLogs, setShowLogs] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const isReal = store.mode === 'REAL';
+  const positions = isReal ? store.realPositions : store.paperPositions;
+  const trades = isReal ? store.realTrades : store.paperTrades;
+  const cash = isReal ? store.realCash : store.paperCash;
+  const startCapital = store.settings.startCapital;
+
   // Portfolio calculations
-  const cash = store.equity;
-  const positionsValue = store.positions.reduce(
+  const positionsValue = positions.reduce(
     (sum, p) => sum + p.shares * (p.currentPrice ?? p.entry),
     0
   );
-  const totalPortfolioValue = cash + positionsValue;
-  const totalPnl = totalPortfolioValue - store.settings.startCapital;
-  const totalPnlPct = (totalPnl / store.settings.startCapital) * 100;
+  const totalPortfolioValue = isReal ? positionsValue : (cash + positionsValue);
 
-  const unrealizedPnl = store.positions.reduce(
+  const unrealizedPnl = positions.reduce(
     (sum, p) => sum + p.shares * ((p.currentPrice ?? p.entry) - p.entry),
     0
   );
+  const realizedPnl = trades.reduce((s, t) => s + t.pnl, 0);
+  const totalPnl = isReal ? (realizedPnl + unrealizedPnl) : (totalPortfolioValue - startCapital);
+  const totalPnlPct = startCapital > 0 ? (totalPnl / startCapital) * 100 : 0;
 
-  const peak = Math.max(store.peakEquity, totalPortfolioValue);
-  const drawdown = peak > 0 ? ((peak - totalPortfolioValue) / peak) * 100 : 0;
+  const peak = isReal ? store.realPeakValue : store.paperPeakValue;
+  const drawdown = peak > 0 ? Math.max(0, ((peak - totalPortfolioValue) / peak) * 100) : 0;
 
   // Today realized P&L
   const today = new Date().toISOString().slice(0, 10);
-  const todayRealizedPnl = store.trades
+  const todayRealizedPnl = trades
     .filter(t => t.date.startsWith(today))
     .reduce((s, t) => s + t.pnl, 0);
 
@@ -39,10 +45,12 @@ export default function Dashboard() {
     try {
       const results = await runEngineTick(true);
       const buyCount = results.filter(r => r.status === 'BUY').length;
-      const openCount = useStore.getState().positions.length;
-      setNotice(`✓ Engine executed: ${buyCount} BUY setups found. Active Open Positions: ${openCount}/4.`);
+      const curPositions = (useStore.getState().mode === 'REAL'
+        ? useStore.getState().realPositions
+        : useStore.getState().paperPositions).length;
+      setNotice(`✓ Executed: ${buyCount} setups found. Active Open Positions: ${curPositions}/4.`);
     } catch (e: any) {
-      setNotice(`Tick error: ${e?.message || e}`);
+      setNotice(`Execution error: ${e?.message || e}`);
     } finally {
       setTicking(false);
     }
@@ -66,6 +74,15 @@ export default function Dashboard() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {!isReal && (
+            <button
+              onClick={() => store.resetPaperAccount()}
+              className="text-[11px] bg-surface text-muted hover:text-white border border-border px-2 py-1 rounded-lg"
+              title="Reset Virtual Wallet to ₹10,000"
+            >
+              ↺ Reset
+            </button>
+          )}
           <span className={`text-xs px-2.5 py-1 rounded-full font-bold uppercase tracking-wider ${
             store.mode === 'PAPER' ? 'bg-accent/20 text-accent border border-accent/40' : 'bg-warn/20 text-warn border border-warn/40'
           }`}>
@@ -90,7 +107,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Mode Switch */}
+      {/* Mode Switch (PAPER vs REAL) */}
       <div className="bg-surface rounded-xl p-3 border border-border">
         <div className="flex gap-2">
           <button
@@ -130,20 +147,28 @@ export default function Dashboard() {
       {/* Wallet Stats */}
       <div className="bg-surface rounded-xl p-4 border border-border space-y-3">
         <div className="flex justify-between items-baseline">
-          <span className="text-muted text-xs uppercase tracking-wider font-semibold">Total Portfolio</span>
+          <span className="text-muted text-xs uppercase tracking-wider font-semibold">
+            {isReal ? 'Real Portfolio Value' : 'Total Paper Portfolio'}
+          </span>
           <span className="text-2xl font-bold text-white">₹{totalPortfolioValue.toFixed(2)}</span>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 pt-1 border-t border-border/60">
-          <div>
-            <div className="text-[11px] text-muted">Cash Available</div>
-            <div className="text-sm font-semibold text-white">₹{cash.toFixed(2)}</div>
+        {!isReal ? (
+          <div className="grid grid-cols-2 gap-2 pt-1 border-t border-border/60">
+            <div>
+              <div className="text-[11px] text-muted">Cash Available</div>
+              <div className="text-sm font-semibold text-white">₹{cash.toFixed(2)}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-[11px] text-muted">Invested Value</div>
+              <div className="text-sm font-semibold text-white">₹{positionsValue.toFixed(2)}</div>
+            </div>
           </div>
-          <div className="text-right">
-            <div className="text-[11px] text-muted">Invested Value</div>
-            <div className="text-sm font-semibold text-white">₹{positionsValue.toFixed(2)}</div>
+        ) : (
+          <div className="pt-1 border-t border-border/60 text-xs text-muted">
+            Angel One Delivery Swing Trades (Live Broker Orders)
           </div>
-        </div>
+        )}
 
         <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border/60 text-xs">
           <div>
@@ -159,9 +184,9 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="text-right">
-            <div className="text-muted text-[11px]">Drawdown</div>
-            <div className={`font-bold ${drawdown > 5 ? 'text-red' : 'text-muted'}`}>
-              -{drawdown.toFixed(1)}%
+            <div className="text-muted text-[11px]">Today P&L</div>
+            <div className={`font-bold ${todayRealizedPnl >= 0 ? 'text-green' : 'text-red'}`}>
+              {todayRealizedPnl >= 0 ? '+' : ''}₹{todayRealizedPnl.toFixed(2)}
             </div>
           </div>
         </div>
@@ -174,7 +199,7 @@ export default function Dashboard() {
             Auto-Trade Engine
             {store.autoTrade && <span className="w-2 h-2 rounded-full bg-green animate-ping" />}
           </div>
-          <div className="text-xs text-muted mt-0.5">Runs every 60s during 9:30–15:00 IST</div>
+          <div className="text-xs text-muted mt-0.5">Scans & manages trades every 60s (Max 4 positions)</div>
         </div>
         <button
           onClick={() => store.setAutoTrade(!store.autoTrade)}
@@ -195,7 +220,7 @@ export default function Dashboard() {
           disabled={ticking}
           className="w-full bg-accent text-bg py-3 rounded-xl font-bold text-sm active:opacity-90 disabled:opacity-50 shadow"
         >
-          {ticking ? 'Scanning Watchlist & Market...' : '⚡ Run Engine & Scan Now'}
+          {ticking ? 'Scanning & Executing...' : '⚡ Run Engine & Scan Now'}
         </button>
 
         {notice && (
@@ -209,9 +234,9 @@ export default function Dashboard() {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <h2 className="text-xs font-bold text-muted uppercase tracking-wider">
-            Open Positions ({store.positions.length}/4)
+            {isReal ? 'Real Positions' : 'Paper Positions'} ({positions.length}/4)
           </h2>
-          {store.positions.length > 0 && (
+          {positions.length > 0 && (
             <span className="text-xs text-muted font-medium">
               Live P&L: <span className={unrealizedPnl >= 0 ? 'text-green font-bold' : 'text-red font-bold'}>
                 {unrealizedPnl >= 0 ? '+' : ''}₹{unrealizedPnl.toFixed(2)}
@@ -220,16 +245,16 @@ export default function Dashboard() {
           )}
         </div>
 
-        {store.positions.length === 0 && (
+        {positions.length === 0 && (
           <div className="bg-surface rounded-xl p-5 border border-border text-center text-muted text-sm space-y-1">
-            <div>No open positions.</div>
+            <div>No open positions in {isReal ? 'REAL' : 'PAPER'} mode.</div>
             <div className="text-xs text-muted/70">
-              Open the <strong>Scanner</strong> tab to test instant paper buy or scan signals.
+              Tap "Run Engine & Scan Now" to find and enter valid swing trades (Max 4).
             </div>
           </div>
         )}
 
-        {store.positions.map(pos => {
+        {positions.map(pos => {
           const curPrice = pos.currentPrice ?? pos.entry;
           const posPnl = (curPrice - pos.entry) * pos.shares;
           const posPnlPct = ((curPrice - pos.entry) / pos.entry) * 100;

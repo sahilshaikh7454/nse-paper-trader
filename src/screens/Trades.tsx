@@ -2,7 +2,9 @@ import React from 'react';
 import { useStore } from '../store';
 
 export default function Trades() {
-  const { trades } = useStore();
+  const store = useStore();
+  const isReal = store.mode === 'REAL';
+  const trades = isReal ? store.realTrades : store.paperTrades;
 
   const wins = trades.filter(t => t.pnl > 0);
   const losses = trades.filter(t => t.pnl <= 0);

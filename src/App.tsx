@@ -20,7 +20,8 @@ export default function App() {
 
     // 60-second engine loop
     tickRef.current = setInterval(() => {
-      if (isMarketOpen() || store.positions.length > 0) {
+      const hasPositions = store.paperPositions.length > 0 || store.realPositions.length > 0;
+      if (isMarketOpen() || hasPositions) {
         runTick();
       }
     }, 60_000);
